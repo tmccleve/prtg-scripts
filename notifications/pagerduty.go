@@ -4,7 +4,6 @@ import (
 	"io/ioutil"
 	"flag"
 	"log"
-	"path/filepath"
 	"strings"
 
 	"github.com/PagerDuty/go-pagerduty"
@@ -29,7 +28,7 @@ type prtgEvent struct {
 	IncidentKey string
 }
 
-const configPath = ".pd.yml"
+const configPath = "C:\\Program Files (x86)\\PRTG Network Monitor\\Notifications\\EXE\\.pd.yml"
 var config pdConfig
 
 func main() {
@@ -126,8 +125,7 @@ func getTriggeredIncidents(ctx *pagerduty.Client, incidentKey string) (*pagerdut
 }
 
 func (c pdConfig)getConf(yamlPath string) (pdConfig){
-	filename, _ := filepath.Abs(yamlPath)
-	yamlFile, err := ioutil.ReadFile(filename)
+	yamlFile, err := ioutil.ReadFile(yamlPath)
 	if err != nil{
 		log.Fatalln(err)
 	}
