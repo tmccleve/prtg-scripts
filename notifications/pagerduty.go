@@ -2,20 +2,13 @@ package main
 
 import (
 	"flag"
-	"io/ioutil"
 	"log"
 	"strings"
-
-	"github.com/PagerDuty/go-pagerduty"
-	"gopkg.in/yaml.v2"
+	"./event"
+	"time"
 )
 
-type pdConfig struct {
-	ApiKey    string `yaml:"apikey"`
-	UserEmail string `yaml:"useremail"`
-}
-
-type prtgEvent struct {
+type PRTGEvent struct {
 	Probe       string
 	Device      string
 	Name        string
@@ -25,13 +18,10 @@ type prtgEvent struct {
 	Message     string
 	ServiceKey  string
 	IncidentKey string
+	Severity    string
 }
 
-const configPath = "C:\\Program Files (x86)\\PRTG Network Monitor\\Notifications\\EXE\\.pd.yml"
-
-var config pdConfig
-
-func init() {
+func main() {
 	var probe = flag.String("probe", "local", "The PRTG probe name")
 	var device = flag.String("device", "device", "The PRTG device name")
 	var name = flag.String("name", "name", "The PRTG sensor name for the device")
@@ -40,13 +30,10 @@ func init() {
 	var link = flag.String("linkdevice", "http://localhost", "The link to the triggering sensor")
 	var message = flag.String("message", "message", "The PRTG message for the alert")
 	var serviceKey = flag.String("servicekey", "myServiceKey", "The PagerDuty v2 service integration key")
-}
-
-func main() {
-	config = config.getConf(configPath)
+	var severity = flag.String("severity", "error", "The severity level of the incident (critical, error, warning, or info)")
 	flag.Parse()
 
-	pd := &prtgEvent{
+	pd := &PRTGEvent{
 		Probe:       *probe,
 		Device:      *device,
 		Name:        *name,
@@ -56,12 +43,11 @@ func main() {
 		Message:     *message,
 		ServiceKey:  *serviceKey,
 		IncidentKey: *probe + "-" + *device + "-" + *name,
+		Severity:    *severity,
 	}
 
 	if strings.Contains(pd.Status, "Up") || strings.Contains(pd.Status, "ended") {
-		ctx := pagerduty.NewClient(config.ApiKey)
-		incident, _ := getTriggeredIncidents(ctx, pd.IncidentKey)
-		resolveEvent(ctx, incident.Incidents)
+		resolveEvent(pd)
 	} else {
 		event, err := triggerEvent(pd)
 		if err != nil {
@@ -71,68 +57,50 @@ func main() {
 	}
 }
 
-func triggerEvent(prtg *prtgEvent) (*pagerduty.EventResponse, error) {
-	event := &pagerduty.Event{
-		Type:        "trigger",
-		IncidentKey: prtg.IncidentKey,
-		ServiceKey:  prtg.ServiceKey,
-		Description: prtg.IncidentKey,
-		Details: "Link: " + prtg.Link +
-			"\nIncidentKey: " + prtg.IncidentKey +
-			"\nStatus: " + prtg.Status +
-			"\nDate: " + prtg.Date +
-			"\nMessage: " + prtg.Message,
-		ClientURL: prtg.Link,
+
+func triggerEvent(prtg *PRTGEvent) (*event.EventResponse, error) {
+	const layout = "2006-01-02T15:04:05.000Z"
+	t,err := time.Parse(layout, prtg.Date)
+	if err != nil {
+		t = time.Now()
 	}
-	res, err := pagerduty.CreateEvent(*event)
+	newEvent := &event.Event{
+		RoutingKey: prtg.ServiceKey,
+		Action: "trigger",
+		DedupKey: prtg.IncidentKey,
+		Client: "PRTG: " + prtg.IncidentKey,
+		ClientURL: prtg.Link,
+		Payload: &event.EventPayload{
+			Summary: prtg.IncidentKey,
+			Timestamp: t.Format(layout),
+			Source: prtg.Link,
+			Severity: prtg.Severity,
+			Component: prtg.Device,
+			Group: prtg.Probe,
+			Class: prtg.Name,
+			Details: "Link: " + prtg.Link +
+				"\nIncidentKey: " + prtg.IncidentKey +
+				"\nStatus: " + prtg.Status +
+				"\nDate: " + prtg.Date +
+				"\nMessage: " + prtg.Message,
+		},
+	}
+	res, err := event.ManageEvent(*newEvent)
 	if err != nil {
 		return nil, err
 	}
 	return res, nil
 }
 
-func resolveEvent(ctx *pagerduty.Client, incidents []pagerduty.Incident) {
-	var incidentSlice []pagerduty.Incident
-	for _, incident := range incidents {
-		resolve := &pagerduty.Incident{
-			APIObject: pagerduty.APIObject{Type: "incident_reference",
-				ID: incident.ID},
-			Service:            incident.Service,
-			LastStatusChangeAt: incident.LastStatusChangeAt,
-			LastStatusChangeBy: incident.LastStatusChangeBy,
-			EscalationPolicy:   incident.EscalationPolicy,
-			Status:             "resolved",
-		}
-		incidentSlice = append(incidentSlice, *resolve)
+func resolveEvent(prtg *PRTGEvent) (*event.EventResponse, error) {
+	triggeredEvent := &event.Event{
+		RoutingKey: prtg.ServiceKey,
+		Action: "resolve",
+		DedupKey: prtg.IncidentKey,
 	}
-	e := ctx.ManageIncidents(config.UserEmail, incidentSlice)
-	if e != nil {
-		log.Fatalln(e)
-	}
-}
-
-func getTriggeredIncidents(ctx *pagerduty.Client, incidentKey string) (*pagerduty.ListIncidentsResponse, error) {
-	var statuses []string
-	incidentsOptions := &pagerduty.ListIncidentsOptions{
-		APIListObject: pagerduty.APIListObject{Limit: 100},
-		IncidentKey:   incidentKey,
-		Statuses:      append(statuses, "triggered"),
-	}
-	incidents, err := ctx.ListIncidents(*incidentsOptions)
+	res, err := event.ManageEvent(*triggeredEvent)
 	if err != nil {
 		return nil, err
 	}
-	return incidents, nil
-}
-
-func (c pdConfig) getConf(yamlPath string) pdConfig {
-	yamlFile, err := ioutil.ReadFile(yamlPath)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	err = yaml.Unmarshal(yamlFile, &c)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	return c
+	return res, nil
 }
