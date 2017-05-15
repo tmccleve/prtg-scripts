@@ -11,7 +11,7 @@
 
 Build the package
 
-`go build pagerduty.go`
+`go build`
 
 From an Adminstrator powershell session:
 `cp pagerduty.exe "C:\Program Files (x86)\PRTG Network Monitor\Notifications\EXE\"`
